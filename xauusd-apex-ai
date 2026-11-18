@@ -1,1 +1,198 @@
 
+import os
+import time
+import threading
+import random
+from datetime import datetime
+import requests
+from flask import Flask, render_template_string, jsonify
+
+app = Flask(__name__)
+
+# FreeLLMAPI Gateway Configuration
+FREE_LLM_URL = os.environ.get("FREE_LLM_URL", "http://localhost:3001/v1/messages")
+UNIFIED_API_KEY = os.environ.get("UNIFIED_API_KEY", "freellmapi-your-unified-key")
+
+# Telegram Bot Configuration (អាចដាក់ជា Environment Variables ឬបំពេញទីនេះផ្ទាល់)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
+
+market_state = {
+    "price": 2650.00,
+    "rsi": 50.0,
+    "ai_reasoning": "Initializing FreeLLMAPI Smart Gateway...",
+    "signal": "WAITING FOR AI CONFLUENCE",
+    "badge_class": "badge-locked",
+    "entry": "--", "tp": "--", "sl": "--"
+}
+
+price_history = [2650.0 + (i * 0.2) for i in range(30)]
+last_signal_date = None
+
+def send_telegram_alert(message):
+    """បញ្ជូន Signal ជូនដំណឹងផ្ទាល់ទៅកាន់ Telegram លើទូរស័ព្ទដៃ"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("[+] Telegram Alert Sent Successfully!")
+        else:
+            print(f"[-] Telegram Error: {response.text}")
+    except Exception as e:
+        print(f"[-] Connection Error to Telegram: {e}")
+
+def ask_freellmapi_for_analysis(price, rsi, atr):
+    headers = {
+        "x-api-key": UNIFIED_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    prompt = (
+        f"Analyze XAUUSD current spot price at ${price}, RSI is {rsi:.1f}, and ATR is {atr}. "
+        "As an institutional trading expert focusing on strict 1-signal/day high probability setups, "
+        "evaluate if this meets absolute high win-rate confluence. "
+        "Return a clear verdict containing 'BUY', 'SELL', or 'HOLD' with concise institutional reasoning."
+    )
+    payload = {
+        "model": "auto:smart",
+        "max_tokens": 300,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        response = requests.post(FREE_LLM_URL, json=payload, headers=headers, timeout=12)
+        if response.status_code == 200:
+            return response.json()['content'][0]['text']
+        else:
+            return f"API Error: {response.text}"
+    except Exception as e:
+        return f"Connection Error: {e}"
+
+def background_ai_scanner():
+    global market_state, last_signal_date
+    while True:
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        current_price = price_history[-1] + ((random.random() - 0.49) * 3.5)
+        price_history.append(round(current_price, 2))
+        if len(price_history) > 50: price_history.pop(0)
+
+        gains, losses = 0, 0
+        for i in range(1, 15):
+            diff = price_history[-i] - price_history[-i-1]
+            if diff > 0: gains += diff
+            else: losses -= diff
+        rs = (gains / 14) / ((losses / 14) or 1)
+        rsi = 100 - (100 / (1 + rs))
+        atr = 5.8
+
+        if last_signal_date == current_date:
+            market_state.update({
+                "price": round(current_price, 2), "rsi": round(rsi, 1),
+                "signal": "DAILY QUOTA REACHED (1/1)",
+                "ai_reasoning": "System locked for 24h after successful execution."
+            })
+        else:
+            if rsi < 28 or rsi > 72:
+                ai_analysis = ask_freellmapi_for_analysis(current_price, rsi, atr)
+                market_state["ai_reasoning"] = ai_analysis
+
+                if "BUY" in ai_analysis.upper() or rsi < 25:
+                    entry = round(current_price, 2)
+                    tp = round(entry + (atr * 4.0), 2)
+                    sl = round(entry - (atr * 1.0), 2)
+                    market_state.update({
+                        "price": entry, "rsi": round(rsi, 1),
+                        "signal": "🎯 AI APEX BUY SIGNAL (Telegram Ready)",
+                        "badge_class": "badge-active",
+                        "entry": f"${entry}", "tp": f"${tp}", "sl": f"${sl}"
+                    })
+                    
+                    msg = (
+                        "🚨 *AI APEX SNIPER SIGNAL: XAUUSD BUY* 🚨\n\n"
+                        f"📍 *Entry Price:* `${entry}`\n"
+                        f"🟢 *Take Profit (TP):* `${tp}` (RR 1:4)\n"
+                        f"🔴 *Stop Loss (SL):* `${sl}`\n\n"
+                        f"🤖 *AI Analysis:* {ai_analysis}\n\n"
+                        "⚠️ *Daily Quota:* `1 / 1 Executed. Locked for 24h.`"
+                    )
+                    send_telegram_alert(msg)
+                    last_signal_date = current_date
+
+                elif "SELL" in ai_analysis.upper() or rsi > 75:
+                    entry = round(current_price, 2)
+                    tp = round(entry - (atr * 4.0), 2)
+                    sl = round(entry + (atr * 1.0), 2)
+                    market_state.update({
+                        "price": entry, "rsi": round(rsi, 1),
+                        "signal": "🎯 AI APEX SELL SIGNAL (Telegram Ready)",
+                        "badge_class": "badge-active",
+                        "entry": f"${entry}", "tp": f"${tp}", "sl": f"${sl}"
+                    })
+                    
+                    msg = (
+                        "🚨 *AI APEX SNIPER SIGNAL: XAUUSD SELL* 🚨\n\n"
+                        f"📍 *Entry Price:* `${entry}`\n"
+                        f"🟢 *Take Profit (TP):* `${tp}` (RR 1:4)\n"
+                        f"🔴 *Stop Loss (SL):* `${sl}`\n\n"
+                        f"🤖 *AI Analysis:* {ai_analysis}\n\n"
+                        "⚠️ *Daily Quota:* `1 / 1 Executed. Locked for 24h.`"
+                    )
+                    send_telegram_alert(msg)
+                    last_signal_date = current_date
+            else:
+                market_state.update({
+                    "price": round(current_price, 2), "rsi": round(rsi, 1),
+                    "signal": "⏳ FILTERING NOISE VIA FREELLMAPI",
+                    "badge_class": "badge-locked"
+                })
+        time.sleep(45)
+
+@app.route('/')
+def index():
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html lang="km">
+    <head><meta charset="UTF-8"><title>AI Apex Telegram Scanner</title>
+    <style>body{background:#020408;color:#f1f5f9;font-family:monospace;padding:20px;}
+    .wrap{max-width:600px;margin:auto;background:#0a0f1d;border:1px solid #1e293b;padding:20px;border-radius:8px;}
+    .price{font-size:32px;color:#fbbf24;font-weight:bold;}
+    .badge-active{background:#065f46;color:#34d399;padding:6px;border-radius:4px;}
+    .badge-locked{background:#450a0a;color:#fca5a5;padding:6px;border-radius:4px;}</style></head>
+    <body><div class="wrap">
+    <h2>AI APEX TELEGRAM ENGINE</h2>
+    <p>Live Spot: <span id="price" class="price">$0.00</span></p>
+    <p>Status: <span id="signal" class="badge-locked">Loading...</span></p>
+    <p>RSI: <span id="rsi">--</span></p>
+    <p>Entry: <span id="entry" style="color:#fff;">--</span> | TP: <span id="tp" style="color:#34d399;">--</span> | SL: <span id="sl" style="color:#f87171;">--</span></p>
+    <p><strong>AI Reasoning:</strong></p>
+    <pre id="reasoning" style="background:#020408;padding:10px;color:#38bdf8;white-space:pre-wrap;font-size:11px;"></pre>
+    </div><script>
+    async function update(){
+        let res = await fetch('/data');let d = await res.json();
+        document.getElementById('price').innerText = '$' + d.price.toFixed(2);
+        document.getElementById('rsi').innerText = d.rsi;
+        document.getElementById('signal').innerText = d.signal;
+        document.getElementById('signal').className = d.badge_class;
+        document.getElementById('entry').innerText = d.entry;
+        document.getElementById('tp').innerText = d.tp;
+        document.getElementById('sl').innerText = d.sl;
+        document.getElementById('reasoning').innerText = d.ai_reasoning;
+    }setInterval(update,3000);update();</script></body></html>
+    ''')
+
+@app.route('/data')
+def data():
+    return jsonify(market_state)
+
+if __name__ == '__main__':
+    t = threading.Thread(target=background_ai_scanner, daemon=True)
+    t.start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+web: python app.py
+flask
+requests
